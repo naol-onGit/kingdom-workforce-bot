@@ -1,0 +1,29 @@
+# Python compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# Database files
+workers.db
+*.db
+
+# Credentials / secrets
+credentials.json
+.env
+
+# Logs
+*.log
+
+# IDE / editor configs
+.vscode/
+.idea/
+
+# OS-specific
+Thumbs.db
+.DS_Store
