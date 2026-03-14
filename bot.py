@@ -7,13 +7,14 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
+from flask import Flask, request
 
 import sqlite3
 from datetime import datetime
 import pandas as pd
 import os
 from dotenv import load_dotenv
-from google_sheets import append_worker_to_sheet   # 👈 NEW
+from google_sheets import append_worker_to_sheet
 
 # Load environment variables
 load_dotenv()
@@ -26,6 +27,13 @@ ADMINS = os.environ.get("KINGDOM_WORKFORCE_ADMINS", "")
 ADMINS = [int(uid) for uid in ADMINS.split(",") if uid.strip()]
 
 FULLNAME, PHONE, PROFESSION, EXPERIENCE = range(4)
+
+# ================= FLASK APP =================
+flask_app = Flask(__name__)
+
+# ================= TELEGRAM APP =================
+# We build the application once at module level so it's shared across requests
+telegram_app = ApplicationBuilder().token(TOKEN).build()
 
 
 # ================= START =================
@@ -162,27 +170,49 @@ async def export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Worker list exported successfully.")
 
 
-# ================= MAIN =================
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+# ================= REGISTER HANDLERS =================
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        FULLNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, fullname)],
+        PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, phone)],
+        PROFESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, profession)],
+        EXPERIENCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, experience)],
+    },
+    fallbacks=[]
+)
 
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            FULLNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, fullname)],
-            PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, phone)],
-            PROFESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, profession)],
-            EXPERIENCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, experience)],
-        },
-        fallbacks=[]
-    )
-
-    app.add_handler(conv_handler)
-    app.add_handler(CommandHandler("export", export))
-
-    print("👑 Kingdom Workforce Bot Running...")
-    app.run_polling()
+telegram_app.add_handler(conv_handler)
+telegram_app.add_handler(CommandHandler("export", export))
 
 
+# ================= WEBHOOK ROUTES =================
+@flask_app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    """Telegram calls this URL every time a user sends a message."""
+    import asyncio
+    import json
+
+    json_data = request.get_json(force=True)
+    update = Update.de_json(json_data, telegram_app.bot)
+
+    # Run the async handler in an event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(telegram_app.process_update(update))
+    finally:
+        loop.close()
+
+    return "OK", 200
+
+
+@flask_app.route("/")
+def index():
+    """Health check — lets GojoHost know the app is alive."""
+    return "👑 Kingdom Workforce Bot is running!", 200
+
+
+# ================= ENTRY POINT =================
 if __name__ == "__main__":
-    main()
+    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
