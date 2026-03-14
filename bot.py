@@ -23,10 +23,78 @@ TOKEN = os.environ.get("KINGDOM_WORKFORCE_TOKEN")
 if TOKEN is None:
     raise ValueError("Error: Bot token not found. Please set KINGDOM_WORKFORCE_TOKEN in your .env file.")
 
+USE_SQLITE = os.environ.get("USE_SQLITE", "1").lower() not in ("0", "false", "no")
+
 ADMINS = os.environ.get("KINGDOM_WORKFORCE_ADMINS", "")
 ADMINS = [int(uid) for uid in ADMINS.split(",") if uid.strip()]
 
 FULLNAME, PHONE, PROFESSION, EXPERIENCE = range(4)
+
+
+def _ensure_sqlite_db():
+    if not USE_SQLITE:
+        return
+    conn = sqlite3.connect("workers.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS workers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            full_name TEXT,
+            phone TEXT UNIQUE,
+            profession TEXT,
+            experience_years INTEGER,
+            registration_date TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def _get_existing_user_by_phone(phone):
+    if not USE_SQLITE:
+        return None
+    try:
+        conn = sqlite3.connect("workers.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM workers WHERE phone = ?", (phone,))
+        row = cursor.fetchone()
+        conn.close()
+        return row
+    except Exception:
+        return None
+
+
+def _save_worker_sqlite(data):
+    if not USE_SQLITE:
+        return None
+    try:
+        conn = sqlite3.connect("workers.db")
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO workers (full_name, phone, profession, experience_years, registration_date)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                data["full_name"],
+                data["phone"],
+                data["profession"],
+                data["experience_years"],
+                data["registration_date"],
+            ),
+        )
+        worker_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return worker_id
+    except Exception:
+        return None
+
+
+# Ensure SQLite table exists when app starts locally.
+_ensure_sqlite_db()
 
 # ================= FLASK APP =================
 flask_app = Flask(__name__)
@@ -66,11 +134,7 @@ async def phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return PHONE
 
-    conn = sqlite3.connect("workers.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM workers WHERE phone = ?", (phone_number,))
-    existing_user = cursor.fetchone()
-    conn.close()
+    existing_user = _get_existing_user_by_phone(phone_number)
 
     if existing_user:
         await update.message.reply_text(
@@ -110,22 +174,16 @@ async def experience(update: Update, context: ContextTypes.DEFAULT_TYPE):
     registration_date = datetime.now().strftime("%Y-%m-%d")
 
     # ===== SAVE TO SQLITE =====
-    conn = sqlite3.connect("workers.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO workers (full_name, phone, profession, experience_years, registration_date)
-        VALUES (?, ?, ?, ?, ?)
-    """, (
-        context.user_data["full_name"],
-        context.user_data["phone"],
-        context.user_data["profession"],
-        experience_years,
-        registration_date
-    ))
+    worker_id = _save_worker_sqlite({
+        "full_name": context.user_data["full_name"],
+        "phone": context.user_data["phone"],
+        "profession": context.user_data["profession"],
+        "experience_years": experience_years,
+        "registration_date": registration_date,
+    })
 
-    worker_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
+    if worker_id is None:
+        worker_id = "N/A (SQLite disabled or unavailable)"
 
     # ===== SEND TO GOOGLE SHEETS =====
     try:
@@ -155,6 +213,12 @@ async def export(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_id not in ADMINS:
         await update.message.reply_text("❌ You are not authorized.")
+        return
+
+    if not USE_SQLITE:
+        await update.message.reply_text(
+            "❌ Export from local SQLite is disabled in this environment. Use Google Sheets directly."
+        )
         return
 
     conn = sqlite3.connect("workers.db")
